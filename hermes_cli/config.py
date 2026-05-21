@@ -1321,6 +1321,19 @@ DEFAULT_CONFIG = {
         "reactions": False,            # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-chat/topic ephemeral system prompts (topics inherit from parent group)
         "allowed_chats": "",           # If set, bot ONLY responds in these group/supergroup chat IDs (whitelist)
+        # Business Mode (Secretary Bots) — owner-approved drafting for
+        # Telegram Business accounts.  When enabled, customer messages
+        # routed via Business Mode are turned into drafts delivered to
+        # the owner with Send / Edit / Discard buttons.  Off by default;
+        # also requires Business Mode toggled in @BotFather.
+        # See website/docs/user-guide/messaging/telegram.md#business-mode.
+        "business_mode": {
+            "enabled": False,
+            "debounce_seconds": 8,           # Coalesce typing-burst customer messages into one draft
+            "draft_ttl_hours": 24,           # Pending drafts expire after this many hours
+            "max_customer_text_chars": 4000, # Truncate very long customer messages before drafting
+            "owner_persona": "",             # Optional override; empty uses a sensible default persona
+        },
     },
 
     # Mattermost platform settings (gateway mode)
