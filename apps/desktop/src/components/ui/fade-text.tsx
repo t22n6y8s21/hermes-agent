@@ -1,5 +1,5 @@
 import type { ComponentProps, CSSProperties } from 'react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useRef, useState } from 'react'
 
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { cn } from '@/lib/utils'
@@ -22,8 +22,23 @@ interface FadeTextProps extends Omit<ComponentProps<'span'>, 'children'> {
  * background is — no need to know the surface color, no after-pseudo overlap.
  * The mask is only applied when the text is actually overflowing, so short
  * strings render as plain text without an unnecessary gradient on their tail.
+ *
+ * `memo` with a custom comparator skips re-renders entirely when the parent
+ * passed the same scalar `children` (e.g. a tool title string that didn't
+ * change between streaming frames). This matters during assistant streaming,
+ * where parents re-render on every token; without the memo+comparator,
+ * tool-fallback's title FadeTexts re-rendered for every token even though
+ * the title text was unchanged, and the `useResizeObserver` callback paid
+ * the `scrollWidth`/`clientWidth` cost (forced layout) on each one.
+ *
+ * The internal `useResizeObserver` fires the measure callback once on mount
+ * and whenever the host span's size changes; that covers initial render and
+ * any container resize. The previous explicit `useEffect([children, ...])`
+ * is redundant in that picture — RO already handles the only case where
+ * overflow state can legitimately change (host size changes) — and was the
+ * cause of the per-token forced-layout flushes.
  */
-export function FadeText({ children, className, fadeWidth = '3rem', style, ...rest }: FadeTextProps) {
+function FadeTextImpl({ children, className, fadeWidth = '3rem', style, ...rest }: FadeTextProps) {
   const ref = useRef<HTMLSpanElement>(null)
   const [overflowing, setOverflowing] = useState(false)
 
@@ -34,14 +49,12 @@ export function FadeText({ children, className, fadeWidth = '3rem', style, ...re
       return
     }
 
-    setOverflowing(el.scrollWidth - el.clientWidth > 1)
+    const overflow = el.scrollWidth - el.clientWidth > 1
+
+    setOverflowing(prev => (prev === overflow ? prev : overflow))
   }, [])
 
   useResizeObserver(measureOverflow, ref)
-
-  useEffect(() => {
-    measureOverflow()
-  }, [children, measureOverflow])
 
   const maskStyle: CSSProperties = overflowing
     ? {
@@ -62,3 +75,27 @@ export function FadeText({ children, className, fadeWidth = '3rem', style, ...re
     </span>
   )
 }
+
+function arePropsEqual(prev: FadeTextProps, next: FadeTextProps): boolean {
+  // Cheap scalar-children short-circuit — the hot path during streaming is
+  // re-rendering FadeText with the same string children every token tick.
+  // For non-string children we skip the optimization and fall through to
+  // React's default referential check (returning false re-renders, but
+  // crucially the inner `useResizeObserver` is still the only thing that
+  // can trigger a forced-layout pass).
+  if (prev.children !== next.children) {
+    if (typeof prev.children !== 'string' || typeof next.children !== 'string') {
+      return false
+    }
+    if (prev.children !== next.children) return false
+  }
+
+  return (
+    prev.className === next.className &&
+    prev.fadeWidth === next.fadeWidth &&
+    prev.style === next.style
+  )
+}
+
+export const FadeText = memo(FadeTextImpl, arePropsEqual)
+

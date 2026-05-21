@@ -85,66 +85,124 @@ async function focusAndType(cdp, text) {
 }
 
 async function submitAndMeasure(cdp, timeoutMs = 5000) {
-  // Install observers, record submit time as performance.now() inside the page,
-  // and wait for all milestones.
-  return await evalP(cdp, `
-    new Promise((resolve) => {
+  // Install observers, await milestones. Returns a promise that we'll resolve
+  // after the page-side Promise resolves OR a CDP-side timeout (belt + braces).
+  const setup = await evalP(
+    cdp,
+    `
+    (() => {
       const composer = document.querySelector('[data-slot="composer-rich-input"]')
       const threadRoot = document.querySelector('[data-slot="aui_thread-content"]') ||
                          document.querySelector('[data-slot="aui_thread-viewport"]')
       const startMessageCount = threadRoot ? threadRoot.querySelectorAll('[data-slot="aui_turn-pair"], [data-slot="aui_message"]').length : 0
-      const startComposerText = composer ? composer.innerText : ''
 
-      const milestones = { start: performance.now() }
-      let done = false
-      const finish = (reason) => {
-        if (done) return
-        done = true
-        clearInterval(poll); clearTimeout(timer)
-        composerObs.disconnect()
-        threadObs?.disconnect()
-        milestones.reason = reason
-        milestones.end = performance.now()
-        milestones.totalMs = milestones.end - milestones.start
-        resolve(milestones)
-      }
+      window.__submitMilestones = { start: performance.now(), startMessageCount }
+      window.__submitDone = false
+      window.__submitResolve = null
 
       const composerObs = new MutationObserver(() => {
-        if (!milestones.composerClearedMs && composer && composer.innerText.length === 0) {
-          milestones.composerClearedMs = performance.now() - milestones.start
+        const m = window.__submitMilestones
+        if (!m) return
+        if (!m.composerClearedMs && composer && composer.innerText.length === 0) {
+          m.composerClearedMs = performance.now() - m.start
         }
       })
       composer && composerObs.observe(composer, { childList: true, subtree: true, characterData: true })
 
-      let threadObs = null
-      if (threadRoot) {
-        threadObs = new MutationObserver(() => {
-          const c = threadRoot.querySelectorAll('[data-slot="aui_turn-pair"], [data-slot="aui_message"]').length
-          if (!milestones.userMessageRenderedMs && c > startMessageCount) {
-            milestones.userMessageRenderedMs = performance.now() - milestones.start
-            requestAnimationFrame(() => {
-              milestones.userMessagePaintMs = performance.now() - milestones.start
-              finish('paint')
-            })
-          }
-        })
-        threadObs.observe(threadRoot, { childList: true, subtree: true })
-      }
-
-      const poll = setInterval(() => {
-        if (milestones.composerClearedMs && !milestones.userMessageRenderedMs &&
-            performance.now() - milestones.start > 2000) {
-          finish('timeout-after-clear')
+      const threadObs = threadRoot ? new MutationObserver(() => {
+        const m = window.__submitMilestones
+        if (!m || m.userMessageRenderedMs) return
+        const c = threadRoot.querySelectorAll('[data-slot="aui_turn-pair"], [data-slot="aui_message"]').length
+        if (c > m.startMessageCount) {
+          m.userMessageRenderedMs = performance.now() - m.start
+          requestAnimationFrame(() => {
+            m.userMessagePaintMs = performance.now() - m.start
+          })
         }
-      }, 100)
-      const timer = setTimeout(() => finish('timeout-overall'), ${timeoutMs})
+      }) : null
+      threadObs && threadObs.observe(threadRoot, { childList: true, subtree: true })
 
-      // Send Enter immediately
-      window.dispatchEvent(new KeyboardEvent('keydown'))  // no-op marker
-      const enterEv = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true })
-      composer?.dispatchEvent(enterEv)
-    })
-  `)
+      window.__submitObservers = { composerObs, threadObs }
+      return true
+    })()
+    `
+  )
+  if (!setup) throw new Error('observer setup failed')
+
+  // Send Enter via real keystroke channel (rawKeyDown + char + keyUp).
+  // React synthetic onKeyDown receives this exactly like a hardware Enter.
+  await cdp.send('Input.dispatchKeyEvent', {
+    type: 'rawKeyDown',
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+    key: 'Enter',
+    code: 'Enter',
+    text: '\r',
+    unmodifiedText: '\r'
+  })
+  await cdp.send('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+    key: 'Enter',
+    code: 'Enter'
+  })
+
+  // Poll for the milestones from outside; cap at timeoutMs.
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const m = await evalP(cdp, 'JSON.stringify(window.__submitMilestones)')
+    const parsed = JSON.parse(m || '{}')
+    if (parsed.userMessagePaintMs != null) {
+      parsed.reason = 'paint'
+      await evalP(cdp, `(() => {
+        window.__submitObservers?.composerObs.disconnect()
+        window.__submitObservers?.threadObs?.disconnect()
+      })()`)
+      return parsed
+    }
+    await new Promise(r => setTimeout(r, 50))
+  }
+  // Timed out
+  const m = await evalP(cdp, 'JSON.stringify(window.__submitMilestones)')
+  const parsed = JSON.parse(m || '{}')
+  parsed.reason = 'timeout-overall'
+  await evalP(cdp, `(() => {
+    window.__submitObservers?.composerObs.disconnect()
+    window.__submitObservers?.threadObs?.disconnect()
+  })()`)
+  return parsed
+}
+
+async function tryCancel(cdp) {
+  // Find a Stop / Cancel button and click it. After submit, the composer
+  // turns into "cancel" mode; clicking it interrupts the agent turn so we
+  // don't burn tokens on these probes.
+  await evalP(
+    cdp,
+    `
+    (() => {
+      // Common selectors: aria-label="Stop response", data-slot="composer-cancel",
+      // role=button with text "Stop"
+      const candidates = [
+        '[aria-label="Stop response"]',
+        '[aria-label*="Stop"]',
+        '[aria-label*="Cancel"]',
+        '[data-slot*="cancel"]',
+        '[data-slot*="stop"]'
+      ]
+      for (const sel of candidates) {
+        const el = document.querySelector(sel)
+        if (el) { el.click(); return { clicked: sel } }
+      }
+      // Fallback: any button whose textContent includes "Stop"
+      for (const b of document.querySelectorAll('button')) {
+        if ((b.textContent || '').toLowerCase().includes('stop')) { b.click(); return { clicked: 'btn-text-Stop' } }
+      }
+      return { clicked: null }
+    })()
+    `
+  )
 }
 
 async function main() {
@@ -165,8 +223,11 @@ async function main() {
         `paint=${(result.userMessagePaintMs ?? -1).toFixed?.(0) ?? '?'}ms ` +
         `reason=${result.reason}`
     )
-    // wait for any agent activity to finish before next round so we're not piling up
-    await new Promise(r => setTimeout(r, 4000))
+    // Interrupt the running agent turn so we don't burn tokens on these probes.
+    await new Promise(r => setTimeout(r, 200))
+    await tryCancel(cdp)
+    // Wait long enough for the cancel to settle before next round.
+    await new Promise(r => setTimeout(r, 1500))
   }
   writeFileSync('/tmp/hermes-submit-latency.json', JSON.stringify(samples, null, 2))
   console.log('\nwrote /tmp/hermes-submit-latency.json')
