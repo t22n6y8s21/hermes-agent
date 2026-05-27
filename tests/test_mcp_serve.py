@@ -278,6 +278,14 @@ class TestHelpers:
         result = _get_sessions_dir()
         assert result == tmp_path / "sessions"
 
+    def test_get_state_db_path(self, tmp_path):
+        from mcp_serve import _get_state_db_path
+        assert _get_state_db_path() == tmp_path / "state.db"
+
+    def test_get_channel_directory_path(self, tmp_path):
+        from mcp_serve import _get_channel_directory_path
+        assert _get_channel_directory_path() == tmp_path / "channel_directory.json"
+
     def test_coerce_int_handles_invalid_and_out_of_range_values(self):
         from mcp_serve import _coerce_int
 
@@ -431,7 +439,7 @@ class TestEventBridge:
     def test_wait_wakes_on_enqueue(self):
         from mcp_serve import EventBridge, QueueEvent
         b = EventBridge()
-        result = [None]
+        result: list[dict | None] = [None]
 
         def waiter():
             result[0] = b.wait_for_event(after_cursor=0, timeout_ms=5000)

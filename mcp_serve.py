@@ -59,13 +59,28 @@ except ImportError:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _get_sessions_dir() -> Path:
-    """Return the sessions directory using HERMES_HOME."""
+def _get_hermes_home() -> Path:
+    """Return HERMES_HOME without importing the full gateway/session stack."""
     try:
         from hermes_constants import get_hermes_home
-        return get_hermes_home() / "sessions"
+        return get_hermes_home()
     except ImportError:
-        return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "sessions"
+        return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+
+
+def _get_sessions_dir() -> Path:
+    """Return the sessions directory using HERMES_HOME."""
+    return _get_hermes_home() / "sessions"
+
+
+def _get_state_db_path() -> Path:
+    """Return the SQLite session store path using HERMES_HOME."""
+    return _get_hermes_home() / "state.db"
+
+
+def _get_channel_directory_path() -> Path:
+    """Return the cached channel directory path using HERMES_HOME."""
+    return _get_hermes_home() / "channel_directory.json"
 
 
 def _get_session_db():
@@ -97,13 +112,7 @@ def _load_sessions_index() -> dict:
 
 def _load_channel_directory() -> dict:
     """Load the cached channel directory for available targets."""
-    try:
-        from hermes_constants import get_hermes_home
-        directory_file = get_hermes_home() / "channel_directory.json"
-    except ImportError:
-        directory_file = Path(
-            os.environ.get("HERMES_HOME", Path.home() / ".hermes")
-        ) / "channel_directory.json"
+    directory_file = _get_channel_directory_path()
 
     if not directory_file.exists():
         return {}
@@ -361,11 +370,7 @@ class EventBridge:
             self._cached_sessions_index = _load_sessions_index()
 
         # Check if state.db has changed
-        try:
-            from hermes_constants import get_hermes_home
-            db_file = get_hermes_home() / "state.db"
-        except ImportError:
-            db_file = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
+        db_file = _get_state_db_path()
 
         try:
             db_mtime = db_file.stat().st_mtime if db_file.exists() else 0.0
