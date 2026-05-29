@@ -28,7 +28,14 @@ from hermes_cli import kanban_db as kb
 # ---------------------------------------------------------------------------
 
 def _load_plugin_router():
-    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its router."""
+    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its router.
+
+    Some CLI tests deliberately evict and re-import ``hermes_cli`` modules to
+    validate configuration bootstrapping. This test module keeps a collection-
+    time ``kb`` reference so its monkeypatches must hit the same kanban_db
+    module object used by the dynamically loaded dashboard plugin, regardless
+    of cross-file test order.
+    """
     repo_root = Path(__file__).resolve().parents[2]
     plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     assert plugin_file.exists(), f"plugin file missing: {plugin_file}"
@@ -36,13 +43,15 @@ def _load_plugin_router():
     mod_name = "hermes_dashboard_plugin_kanban_worker_runs_test"
     # Re-use a cached module if already loaded to avoid duplicate-router issues.
     if mod_name in sys.modules:
-        return sys.modules[mod_name].router
-
+        mod = sys.modules[mod_name]
+        setattr(mod, "kanban_db", kb)
+        return mod.router
     spec = importlib.util.spec_from_file_location(mod_name, plugin_file)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     sys.modules[mod_name] = mod
     spec.loader.exec_module(mod)
+    setattr(mod, "kanban_db", kb)
     return mod.router
 
 
