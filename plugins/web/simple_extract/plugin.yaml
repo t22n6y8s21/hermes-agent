@@ -1,0 +1,7 @@
+name: web-simple-extract
+version: 1.0.0
+description: "Credential-free HTTP/HTML extraction fallback for web_extract."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - simple
