@@ -36,6 +36,8 @@ def test_create_swarm_builds_parallel_workers_verifier_and_synthesizer(tmp_path)
         assert [task.assignee for task in workers] == ["researcher-a", "researcher-b"]
         assert verifier.status == "todo"
         assert synthesizer.status == "todo"
+        assert synthesizer.skills in (None, [])
+        assert "avoid-ai-writing" not in (synthesizer.skills or [])
         assert set(kb.parent_ids(conn, created.verifier_id)) == set(created.worker_ids)
         assert kb.parent_ids(conn, created.synthesizer_id) == [created.verifier_id]
         assert all(created.root_id in (task.body or "") for task in workers)
